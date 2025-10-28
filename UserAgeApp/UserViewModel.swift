@@ -6,15 +6,17 @@ struct UserInfo: Identifiable, Codable {
     var id: String
     var name: String
     var age: Int
+    var imagePath: String? // ✅ Changed from imageUrl to imagePath for consistency
 }
 
+@MainActor
 class UserViewModel: ObservableObject {
     @Published var name: String = ""
     @Published var ageText: String = ""
     @Published var users: [UserInfo] = []
-
-    // Search
     @Published var searchText: String = ""
+    @Published var selectedImageData: Data? = nil
+    @Published var selectedImage: UIImage? = nil
 
     // Editing
     @Published var selectedUser: UserInfo?
@@ -23,7 +25,6 @@ class UserViewModel: ObservableObject {
     private let dbRef = Database.database().reference()
     private let usersPath = "users"
 
-    // Computed property for filtered users
     var filteredUsers: [UserInfo] {
         if searchText.isEmpty {
             return users
@@ -32,49 +33,53 @@ class UserViewModel: ObservableObject {
         }
     }
 
+    // MARK: Save New User with Local Image
     func save() {
         guard let age = Int(ageText), !name.isEmpty else { return }
 
         let id = UUID().uuidString
-        let userInfo = UserInfo(id: id, name: name, age: age)
+        var localImagePath: String? = nil
+
+        if let imageData = selectedImageData {
+            localImagePath = saveImageLocally(id: id, imageData: imageData)
+        }
+
+        let userInfo = UserInfo(id: id, name: name, age: age, imagePath: localImagePath)
 
         let data: [String: Any] = [
-            "id": userInfo.id,
-            "name": userInfo.name,
-            "age": userInfo.age
+            "id": id,
+            "name": name,
+            "age": age,
+            "imagePath": localImagePath ?? ""
         ]
 
         dbRef.child(usersPath).child(id).setValue(data) { error, _ in
             if error == nil {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.name = ""
                     self.ageText = ""
-                    self.searchText = ""
+                    self.selectedImage = nil
+                    self.selectedImageData = nil
+                    self.fetchAll()
                 }
-                self.fetchAll()
             }
         }
     }
 
-    func updateUser(newName: String, newAgeText: String) {
-        guard let user = selectedUser,
-              let age = Int(newAgeText),
-              !newName.isEmpty else { return }
+    private func saveImageLocally(id: String, imageData: Data) -> String? {
+        let fileManager = FileManager.default
+        guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
 
-        let updatedData: [String: Any] = [
-            "id": user.id,
-            "name": newName,
-            "age": age
-        ]
+        let folderURL = documentsURL.appendingPathComponent("userImages")
+        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
 
-        dbRef.child(usersPath).child(user.id).updateChildValues(updatedData) { error, _ in
-            if error == nil {
-                self.fetchAll()
-                DispatchQueue.main.async {
-                    self.selectedUser = nil
-                    self.isEditing = false
-                }
-            }
+        let fileURL = folderURL.appendingPathComponent("\(id).jpg")
+        do {
+            try imageData.write(to: fileURL)
+            return fileURL.path
+        } catch {
+            print("❌ Failed to save image locally:", error)
+            return nil
         }
     }
 
@@ -88,12 +93,12 @@ class UserViewModel: ObservableObject {
                        let id = data["id"] as? String,
                        let name = data["name"] as? String,
                        let age = data["age"] as? Int {
-                        newUsers.append(UserInfo(id: id, name: name, age: age))
+                        let imagePath = data["imagePath"] as? String
+                        newUsers.append(UserInfo(id: id, name: name, age: age, imagePath: imagePath))
                     }
                 }
             }
 
-            // Sort alphabetically
             newUsers.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
             DispatchQueue.main.async {
@@ -102,12 +107,34 @@ class UserViewModel: ObservableObject {
         }
     }
 
+   
+
+    /// Return a UIImage loaded from the local imagePath for a user (or nil).
+    func uiImage(for user: UserInfo) -> UIImage? {
+        guard let path = user.imagePath, !path.isEmpty else { return nil }
+        return UIImage(contentsOfFile: path)
+    }
+
+    /// Given an index in filteredUsers, return the matching index in users array.
+    func indexInUsers(forFilteredIndex filteredIndex: Int) -> Int? {
+        guard filteredIndex >= 0 && filteredIndex < filteredUsers.count else { return nil }
+        let id = filteredUsers[filteredIndex].id
+        return users.firstIndex(where: { $0.id == id })
+    }
+
     func deleteUser(at offsets: IndexSet) {
         for index in offsets {
             let user = users[index]
-            dbRef.child(usersPath).child(user.id).removeValue { error, _ in
-                if error == nil { self.fetchAll() }
+
+            // Remove local image
+            if let imagePath = user.imagePath {
+                try? FileManager.default.removeItem(atPath: imagePath)
             }
+
+            // Remove database entry
+            dbRef.child(usersPath).child(user.id).removeValue()
         }
+
+        fetchAll()
     }
 }
