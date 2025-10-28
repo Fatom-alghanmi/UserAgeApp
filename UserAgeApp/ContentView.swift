@@ -26,7 +26,7 @@ struct ContentView: View {
                                 if let uiImage = viewModel.uiImage(for: user) {
                                     Image(uiImage: uiImage)
                                         .resizable()
-                                        .scaledToFill()
+                                        .scaledToFit() // ✅ changed from scaledToFill
                                         .frame(width: 60, height: 60)
                                         .clipShape(RoundedRectangle(cornerRadius: 12))
                                         .overlay(
@@ -49,6 +49,7 @@ struct ContentView: View {
                                                 .stroke(Color.gray.opacity(0.25), lineWidth: 1)
                                         )
                                 }
+
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(user.name)
